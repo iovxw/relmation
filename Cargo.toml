@@ -1,0 +1,16 @@
+[package]
+name = "relmation"
+version = "0.1.0"
+authors = ["iovxw <iovxw@outlook.com>"]
+
+[dependencies]
+num = "^0.1"
+relm =  "^0.9.3"
+futures = "^0.1.10"
+tokio-core = "^0.1.4"
+
+[dev-dependencies]
+gtk = "^0.1.1"
+relm-derive = "^0.9.0"
+relm-attributes = "0.9.0"
+relm-test = "^0.1.0"
