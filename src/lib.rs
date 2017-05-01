@@ -201,20 +201,22 @@ impl<P, MSG> Animation<P, MSG>
         let stream = Interval::new_at(Instant::now() + self.delay, self.frame, relm.handle())
             .unwrap()
             .map_err(|e| panic!(e))
-            .map(move |()| if state2.borrow().done {
+            .map(move |_| if state2.borrow().done {
                      Cmd::Done
                  } else {
                      Cmd::Continue
                  })
             .select(rx)
-            .and_then(move |cmd| match cmd {
-                          Cmd::Stop | Cmd::Done => Err(()), // break loop
-                          Cmd::Continue => {
-                let p = state.borrow_mut().update();
-                Ok((state.borrow().animation.callback)(p))
-            }
-                          Cmd::Undo => unimplemented!(),
-                      });
+            .and_then(move |cmd| {
+                match cmd {
+                    Cmd::Stop | Cmd::Done => Err(()), // break loop
+                    Cmd::Continue => {
+                        let p = state.borrow_mut().update();
+                        Ok((state.borrow().animation.callback)(p))
+                    }
+                    Cmd::Undo => unimplemented!(),
+                }
+            });
         relm.connect_exec_ignore_err(stream, |x| x);
         Controller::new(tx)
     }
