@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::cell::RefCell;
 
 use relm::Relm;
-use futures::{Future, Stream};
+use futures::Stream;
 use tokio_core::reactor::Interval;
 
 #[derive(Copy, Clone)]
@@ -77,12 +77,9 @@ impl_mulf64!(u64);
 impl_mulf64!(f32);
 impl_mulf64!(f64);
 
-pub struct Animation<P, MSG, F>
-    where P: Number,
-          MSG: Clone + relm::DisplayVariant + Send,
-          F: Fn(P) -> MSG + 'static
-{
-    callback: Rc<F>,
+#[derive(Clone)]
+pub struct Animation<P, MSG> {
+    callback: Rc<Fn(P) -> MSG>,
     from: P,
     to: P,
     delay: Duration,
@@ -91,12 +88,11 @@ pub struct Animation<P, MSG, F>
     recur: Loop,
 }
 
-impl<P, MSG, F> Animation<P, MSG, F>
+impl<P, MSG> Animation<P, MSG>
     where P: Number,
-          MSG: Clone + relm::DisplayVariant + Send,
-          F: Fn(P) -> MSG + 'static
+          MSG: Clone + relm::DisplayVariant + Send
 {
-    fn state(&self) -> State<P> {
+    fn state(&self) -> State<P, MSG> {
         State {
             first: true,
             current: self.from,
@@ -104,33 +100,24 @@ impl<P, MSG, F> Animation<P, MSG, F>
             loop_counter: if let Loop::N(n) = self.recur { n } else { 0 },
             done: false,
 
-            from: self.from,
-            to: self.to,
-            delay: self.delay,
-            duration: self.duration,
-            frame: self.frame,
-            recur: self.recur,
+            animation: self.clone(),
         }
     }
 }
 
-pub struct State<P> {
+pub struct State<P, MSG> {
     first: bool,
     current: P,
     instant: Instant,
     loop_counter: usize,
     done: bool,
 
-    from: P,
-    to: P,
-    delay: Duration,
-    duration: Duration,
-    frame: Duration,
-    recur: Loop,
+    animation: Animation<P, MSG>,
 }
 
-impl<P> State<P>
-    where P: Number
+impl<P, MSG> State<P, MSG>
+    where P: Number,
+          MSG: Clone + relm::DisplayVariant + Send
 {
     fn update(&mut self) -> P {
         assert!(!self.done, "Animation was finish");
@@ -140,20 +127,20 @@ impl<P> State<P>
             self.first = false;
         }
 
-        if self.current >= self.to {
-            if !self.recur.is_infinite() {
+        if self.current >= self.animation.to {
+            if !self.animation.recur.is_infinite() {
                 self.loop_counter -= 1;
                 assert!(self.loop_counter >= 1);
             }
-            self.instant -= self.duration;
+            self.instant -= self.animation.duration;
         }
 
         let p = to_millisecond(self.instant.elapsed()) as f64 /
-                to_millisecond(self.duration) as f64;
-        self.current = self.from + (self.to - self.from).mulf64(p);
+                to_millisecond(self.animation.duration) as f64;
+        self.current = self.animation.from + (self.animation.to - self.animation.from).mulf64(p);
 
-        if self.current >= self.to {
-            self.current = self.to;
+        if self.current >= self.animation.to {
+            self.current = self.animation.to;
             if self.loop_counter == 1 {
                 self.done = true;
             }
@@ -163,12 +150,13 @@ impl<P> State<P>
     }
 }
 
-impl<P, MSG, F> Animation<P, MSG, F>
+impl<P, MSG> Animation<P, MSG>
     where P: Number + 'static,
-          MSG: Clone + relm::DisplayVariant + Send + 'static,
-          F: Fn(P) -> MSG + 'static
+          MSG: Clone + relm::DisplayVariant + Send + 'static
 {
-    pub fn new(callback: F) -> Animation<P, MSG, F> {
+    pub fn new<F>(callback: F) -> Animation<P, MSG>
+        where F: Fn(P) -> MSG + 'static
+    {
         Animation {
             callback: Rc::new(callback),
             from: num::zero(),
@@ -180,27 +168,27 @@ impl<P, MSG, F> Animation<P, MSG, F>
         }
     }
 
-    pub fn from(mut self, from: P) -> Animation<P, MSG, F> {
+    pub fn from(mut self, from: P) -> Animation<P, MSG> {
         self.from = from;
         self
     }
 
-    pub fn to(mut self, to: P) -> Animation<P, MSG, F> {
+    pub fn to(mut self, to: P) -> Animation<P, MSG> {
         self.to = to;
         self
     }
 
-    pub fn recur<L: Into<Loop>>(mut self, recur: L) -> Animation<P, MSG, F> {
+    pub fn recur<L: Into<Loop>>(mut self, recur: L) -> Animation<P, MSG> {
         self.recur = recur.into();
         self
     }
 
-    pub fn delay(mut self, delay: Duration) -> Animation<P, MSG, F> {
+    pub fn delay(mut self, delay: Duration) -> Animation<P, MSG> {
         self.delay = delay;
         self
     }
 
-    pub fn duration(mut self, duration: Duration) -> Animation<P, MSG, F> {
+    pub fn duration(mut self, duration: Duration) -> Animation<P, MSG> {
         self.duration = duration;
         self
     }
@@ -209,15 +197,14 @@ impl<P, MSG, F> Animation<P, MSG, F>
         let state = Rc::new(RefCell::new(self.state()));
         let stream = Interval::new_at(Instant::now() + self.delay, self.frame, relm.handle())
             .unwrap()
-            .map_err(|_| ())
-            .and_then(move |_| {
-                          if state.borrow().done {
-                              return Err(()); // break loop
-                          }
-                          Ok(state.borrow_mut().update())
+            .map_err(|e| panic!(e))
+            .and_then(move |_| if state.borrow().done {
+                          Err(()) // break loop
+                      } else {
+                          let p = state.borrow_mut().update();
+                          Ok((state.borrow().animation.callback)(p))
                       });
-        let f = self.callback.clone();
-        relm.connect_exec_ignore_err(stream, move |x| f(x));
+        relm.connect_exec_ignore_err(stream, |x| x);
     }
 }
 
