@@ -9,6 +9,7 @@ use std::cell::RefCell;
 
 use relm::Relm;
 use futures::Stream;
+use futures::sync::mpsc::{unbounded, UnboundedSender};
 use tokio_core::reactor::Interval;
 
 #[derive(Copy, Clone)]
@@ -193,19 +194,56 @@ impl<P, MSG> Animation<P, MSG>
         self
     }
 
-    pub fn start(&self, relm: &Relm<MSG>) {
+    pub fn start(&self, relm: &Relm<MSG>) -> Controller {
         let state = Rc::new(RefCell::new(self.state()));
+        let state2 = state.clone();
+        let (tx, rx) = unbounded();
         let stream = Interval::new_at(Instant::now() + self.delay, self.frame, relm.handle())
             .unwrap()
             .map_err(|e| panic!(e))
-            .and_then(move |_| if state.borrow().done {
-                          Err(()) // break loop
-                      } else {
-                          let p = state.borrow_mut().update();
-                          Ok((state.borrow().animation.callback)(p))
+            .map(move |()| if state2.borrow().done {
+                     Cmd::Done
+                 } else {
+                     Cmd::Continue
+                 })
+            .select(rx)
+            .and_then(move |cmd| match cmd {
+                          Cmd::Stop | Cmd::Done => Err(()), // break loop
+                          Cmd::Continue => {
+                let p = state.borrow_mut().update();
+                Ok((state.borrow().animation.callback)(p))
+            }
+                          Cmd::Undo => unimplemented!(),
                       });
         relm.connect_exec_ignore_err(stream, |x| x);
+        Controller::new(tx)
     }
+}
+
+pub struct Controller {
+    sender: UnboundedSender<Cmd>,
+}
+
+impl Controller {
+    fn new(sender: UnboundedSender<Cmd>) -> Controller {
+        Controller { sender }
+    }
+
+    pub fn stop(&mut self) {
+        self.sender.send(Cmd::Stop).unwrap();
+    }
+
+    pub fn undo(&mut self) {
+        self.sender.send(Cmd::Undo).unwrap();
+    }
+}
+
+// 一个 channel 接收这些消息
+enum Cmd {
+    Continue,
+    Stop,
+    Done,
+    Undo,
 }
 
 fn to_millisecond(t: Duration) -> u64 {
